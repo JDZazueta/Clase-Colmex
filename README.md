@@ -1,0 +1,1 @@
+Este repositorio contiene los ejemplos y ejercicios de la clase "Análisis contrafactual en demografía y los estudios de población". Para ello, se tiene dos archivos que conitene ejercicios y un código de RMarkdown
