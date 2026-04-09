@@ -1,0 +1,457 @@
+---
+title: "Análisis contrafactual en demografía y estudios de población"
+subtitle: "Ejemplos y ejercicios de clase"
+author: "Dr. Jesús Daniel Zazueta Borboa"
+date: "13 de Abril de 2026"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Presentación 
+
+El objetivo de este documento es presentar dos ejemplos con sus respectivos ejercicios para poner en práctica lo aprendido, durante la clase de análisis contrafactual en demografía y estudios de población.
+
+
+## Preparar el ambiente de trabajo en R
+
+Primero comenzamos limpiando el espacio de trabajo, declarando el directorio de trabajo, y cargando las librerias que vamos a utilizar.
+
+
+```{r message = FALSE, warning = FALSE}
+
+# Limpiar espacio de trabajo
+rm(list = ls())
+
+# Poner el directorio de trabajo, si se utiliza un .Rjproject no es necesario este paso
+setwd("~/Desktop/Colmex/Ejercicio clase")
+ 
+# Paqueterias que se van a utlizar
+library(data.table) # Para aplicar funciones a una tabla de datos y obtener una nueva tabla de datos
+library(tidyverse) # Para manipular base de datos 
+library(survey) # Para análisis de encuestas
+library(readstata13) # Open stata files
+
+```
+
+## Ejemplo 1: Cause-Deleted Life table
+
+Este ejercicio contiene tasas de mortalidad y la proporción de diferentes causas de muerte por grupos de edad, sexo, año y entidad en México. La siguiente función, construye una tabla con causa eliminada. 
+
+Los datos son la publicación de Zazueta et al (2025). The impact of violence and COVID-19 on Mexico’s life-expectancy losses and recent bounce-back, 2015–22, International Journal of Epidemology.
+
+```{r message = FALSE, warning = FALSE}
+
+CDLT <- function (nmx, age, Ri, Sex, nax = NULL, n){
+    x <- age
+    m <- length(x)
+    
+  if (is.null(nax)) {
+    nax <- 0.5 * n
+    
+    if (n[2] == 4) {
+      if (Sex == "MALES") {
+        if (nmx[1] >= 0.107) {
+          nax[1] <- 0.33
+          nax[2] <- 1.352
+        }
+        else {
+          nax[1] <- 0.045 + 2.684 * nmx[1]
+          nax[2] <- 1.651 - 2.816 * nmx[1]
+        }
+      }
+      if (Sex == "FEMALES") {
+        if (nmx[1] >= 0.107) {
+          nax[1] <- 0.35
+          nax[2] <- 1.361
+        }
+        else {
+          nax[1] <- 0.053 + 2.8 * nmx[1]
+          nax[2] <- 1.522 - 1.518 * nmx[1]
+        }
+      }
+    }
+  }
+  
+  nqx <- (n * nmx)/(1 + (n - nax) * nmx)
+  nqx <- c(nqx[-(length(nqx))], 1)
+  for (i in 1:length(nqx)) {
+    if (nqx[i] > 1)
+      nqx[i] <- 1
+  }
+  npx <- 1 - nqx
+  l0 = 100000 #standard
+  lx <- round(cumprod(c(l0, npx)))
+  ndx <- -diff(lx)
+  lxpn <- lx[-1]
+  nLx <- n * lxpn + ndx * nax
+  Tx <- rev(cumsum(rev(nLx)))
+  lx <- lx[1:length(age)]
+  ex <- Tx/lx
+  
+  nax[m] <- ex[m] #Último  nax es la esperanza de vida de esa edad
+  
+  # Aquí comenzamos la CDLT
+  npix = npx^(1-Ri) # Obtener una probabilidad de sobrevivir sin causa i
+  nqix = 1 - npix # probabilidad de morir sin causa i
+  lix = lx/lx
+  lix = head(cumprod(c(100000, npix)), -1)
+  ndix <- lix * nqix
+  lxipn <- rep(0, length(x))
+  lxipn <- lix[-1]
+  lxipn[m] <- 0 
+  naix <- n  + (1-Ri) * (nqx/nqix) * (nax-n)
+  for(i in 1:length(naix)){
+    if(naix[i] == "-Inf")
+      naix[i] <- 2.5 
+  }
+  
+  
+  nLix <- n * lxipn + ndix * naix
+  nLix[m] <- ndix[m]/nmx[m]*Ri[m] # We compute the last nLx
+  Tix = rev(cumsum(rev(nLix)))
+  eix = Tix/lix
+  
+  naix[m] <- eix[m] #Último nax es la esperanza de vida de esa edad
+  
+  lt <- data.frame(Age = age,
+                   Sex,
+                   n,
+                   nmx = round(nmx, 4),
+                   nqx = round(nqx, 4),
+                   nax = round(nax, 4),
+                   npx = round(npx,4),
+                   lx, ndx,
+                   Lx = round(nLx,3),
+                   Tx = round(Tx,3),
+                   ex = round(ex,3),
+                   Ri = round(Ri,3),
+                   lix, ndix,
+                   naix = round(naix,3),
+                   eix = round(eix,3)) # Son las columnas que solicitiamos nos regrese
+  
+  return(lt)
+}
+```
+
+
+Abrimos la base de datos, la transformamos a formato long y después aplicamos la función de CDLT para estimar las tablas de vida sin causas i.
+
+```{r message = FALSE, warning = FALSE}
+
+Mex_forCDLT <- read.csv("Data_analysis_CDLT.csv", header = T, sep = ",")
+
+#colnames(Mex_forCDLT) # si se quiere revisar el nombre de las columnas
+#View(Mex_forCDLT) # si se quiere visualizar la base de datos
+
+
+# Ponemos la base de datos en formato long, para hacer el cálculo por 
+# causa de muerte, y la declaramos como data table para facilitar el cálculo 
+# por año, sexo, causa de muerte y entidad federativa
+
+Mex_for_CDLT_longer <- Mex_forCDLT %>% 
+  pivot_longer(!c(YEAR, SEX, Age_group, ENTIDAD_NAME, ENTIDAD,
+                  PSY, Dx, mx),
+               names_to = "CoD",
+               values_to = "Prop") %>% 
+  arrange(ENTIDAD_NAME, ENTIDAD,YEAR, SEX, Age_group) %>% 
+  data.table() 
+
+
+# -- Calculamos la tabla de vida y CDLT para cada entidad, sexo y año
+Life_table_Mex <- Mex_for_CDLT_longer[,cbind(CDLT(nmx = mx,
+                                                  age = Age_group,
+                                                  Sex = SEX,
+                                                  Ri = Prop,
+                                                  nax = NULL,
+                                                  n= c(1,4,rep(5,19)))),
+                                by=list(YEAR,SEX, CoD, ENTIDAD, ENTIDAD_NAME)]
+
+# Se recomienda visualizar el output para ver que todo ok
+#View(Life_table_Mex)
+
+```
+
+Ahora que tenemos las esperanzas de vida con y sin diferentes causas de muerte podemos crear escenarios contrafactuales y estimar la contribución de diferentes causas de muerte
+
+
+```{r message = FALSE, warning = FALSE}
+
+# Seleccionamos las esperanzas de vida a la edad 0, la observada y 
+# la e0 sin causa i
+cfc_e0 <- Life_table_Mex %>% 
+  filter(Age==0) %>% 
+  dplyr::select(YEAR,SEX, CoD, ENTIDAD, ENTIDAD_NAME,
+                ex, eix)
+
+# Utilizaremos el ejemplo de Cardiovascular a nivel nacional,
+cfc_e0_CVD <- cfc_e0 %>% 
+  filter(CoD=="circulatory" & ENTIDAD==0)
+
+# Estimaremos la contribución de Cardiovascular al cambio en el sex gap in e0
+cfc_sexgap_e0_CVD <- cfc_e0_CVD %>% 
+  pivot_wider(names_from = SEX,
+              values_from = c(ex,eix)) %>% 
+  mutate(Sexgap_obs = ex_FEMALES - ex_MALES, # Sex gap observado
+         Sexgap_cfc = eix_FEMALES - eix_MALES)
+
+Viz_cfc <- ggplot(cfc_sexgap_e0_CVD) +
+  geom_line(aes(x=YEAR, y =Sexgap_obs), linetype = "solid", color ="black") +
+  geom_line(aes(x=YEAR, y =Sexgap_cfc), linetype = "dashed", color ="indianred4") +
+  scale_x_continuous(breaks = c(2015,2019,2020,2021,2022)) +
+  theme_grey() +
+    theme(text = element_text(size = 14), 
+        legend.position = "",
+        #legend.position=c(.10, 0.50),
+        legend.background = element_rect(fill="transparent", 
+                                         size=1, linetype="solid", color = "white"),
+        #strip.background = element_rect(color="black", fill="grey80", size=0.5, linetype="solid"),
+        strip.background = element_rect(fill = "grey40", color = "grey20", size = 1),
+        strip.text = element_text(colour = "white"),
+        axis.text.x = element_text(angle = 0, vjust = 1, hjust=.5),
+        legend.key.size = unit(.6, "cm"),
+        legend.key.width = unit(.6,"cm"),
+        legend.title = element_text(color = "Black", size = 12),
+        legend.text = element_text(color = "Black", size = 12)) +
+  labs(x="",
+       y = "Sex gap in e0 (en años)")
+Viz_cfc
+         
+```
+
+
+Después de visualizar como seria la tendencia del sex gap en e0 con y sin enfermedades cardiovasculares, podememos estimar la contribución que CVD tuvo a los niveles y a los cambios en el sexgap en e0 entre 2015 y 2022.
+
+```{r message = FALSE, warning = FALSE}
+
+# Contribución a los niveles del sexgap en cada año
+Contribution_sexgap_e0_CVD <- cfc_sexgap_e0_CVD %>% 
+  mutate(Contribution_Abs = Sexgap_obs - Sexgap_cfc,# Contribución absoluta de CVD 
+         Contribution_rela  = round(Contribution_Abs/Sexgap_obs*100,2)) %>% 
+    dplyr::select(ENTIDAD, ENTIDAD_NAME, YEAR, 
+                Sexgap_obs, Sexgap_cfc,
+                Contribution_Abs, Contribution_rela)
+
+Contribution_sexgap_e0_CVD$Contribution_rela[Contribution_sexgap_e0_CVD$YEAR==2015 |
+                                              Contribution_sexgap_e0_CVD$YEAR==2022 ]
+
+# CVD contribuyo al sex gap en e0 5.23% en 2015 y 6.72% en 2022
+
+# Contribución a los cambios del sexgap en e0 entre 2015 y 2022
+Contribution_tochagessexgap_e0_CVD  <- Contribution_sexgap_e0_CVD %>% 
+  filter(YEAR==2015 | YEAR==2022) %>% 
+  dplyr::select(ENTIDAD, ENTIDAD_NAME, YEAR, Sexgap_obs, Sexgap_cfc) %>% 
+  pivot_wider(names_from = YEAR,
+              values_from = c(Sexgap_obs, Sexgap_cfc)) %>% 
+  mutate(Change_obs = Sexgap_obs_2022 - Sexgap_obs_2015,
+         Change_cfc = Sexgap_cfc_2022 - Sexgap_cfc_2015,
+         Contribution_tochage_Abs = Change_obs - Change_cfc,# Contribución absoluta de CVD 
+         Contribution_tochage_rela  = round(Contribution_tochage_Abs/Change_obs*100,2)) %>% 
+  dplyr::select(ENTIDAD, ENTIDAD_NAME, 
+                Change_obs, Change_cfc,
+                Contribution_tochage_Abs, Contribution_tochage_rela)
+
+Contribution_tochagessexgap_e0_CVD$Contribution_tochage_rela
+
+# CVD contribuyo en un 14% al cambio en el sex gap en e0 entre 2015 y 2022
+
+```
+
+
+
+## Ejemplo 2: Regresión logistica
+
+Utilizaremos los datos de Zazueta et al (2024). En ese artículo los investigadores buscaron analizar la contribución que tienen las condiciones adversas durante la infancia y el peso corporal en edades adultas sobre la probabilidad de reportar diabetes para las diferentes cohortes de nacimiento.
+
+La base de datos contiene información sobre diabetes, características sociodemográficas para tres cohortes de adultos mayores que se encuentran en las edades de 60 a 69 años.
+
+```{r message = FALSE, warning = FALSE}
+
+Data_ENASEM  <- read.dta13("ENASEM_final_clase.dta")
+
+# Modelo logisticio
+Pooled_model <- glm(diabetes_final ~ Sexo + Edad + rural + factor(escolaridad) + 
+                      factor(B10_Excusado_dico) + factor(obesity_50) + nohealth +
+                      factor(cohorte_final) +  factor(obesity_50) *factor(cohorte_final) +
+                      factor(B10_Excusado_dico) *factor(cohorte_final),
+                    data = Data_ENASEM, family = binomial())
+
+#summary(Pooled_model)
+
+# Creamos diferente bases de datos a las cuales les aplicaremos el model:
+
+# Base de datos con las caracteristicas obeservadas,
+Data_obs <- Data_ENASEM %>% 
+  dplyr::select(ID, diabetes_final, Sexo, Edad, rural, escolaridad, 
+                      B10_Excusado_dico, obesity_50, nohealth,
+                      cohorte_final) 
+
+# Base de datos donde todas las personas tienen peso normal
+Data_no_obesity <- Data_ENASEM %>% 
+  dplyr::select(ID, diabetes_final, Sexo, Edad, rural, escolaridad, 
+                      B10_Excusado_dico, obesity_50, nohealth,
+                      cohorte_final) %>% 
+  mutate(obesity_50 = 0)
+
+# Base de datos donde todas las personas no experimentaron condición adversa en la infancia
+Data_no_EDDC <- Data_ENASEM %>% 
+  dplyr::select(ID, diabetes_final, Sexo, Edad, rural, escolaridad, 
+                      B10_Excusado_dico, obesity_50, nohealth,
+                      cohorte_final) %>% 
+  mutate(B10_Excusado_dico = 0)
+
+# Base de datos donde todas las personas no experimentaron condición adversa en la infancia y todos
+# con paseo normal
+Data_no_both <- Data_ENASEM %>% 
+  dplyr::select(ID, diabetes_final, Sexo, Edad, rural, escolaridad, 
+                      B10_Excusado_dico, obesity_50, nohealth,
+                      cohorte_final) %>% 
+  mutate(obesity_50 = 0,
+         B10_Excusado_dico = 0)
+
+
+# Estimar probabilidades a partir del modelo
+Data_obs$PP_pooledmodel <- predict(Pooled_model,Data_obs, type = "response", na.rm=T)
+Data_no_obesity$PP_pooledmodel <- predict(Pooled_model,Data_no_obesity, type = "response", na.rm=T)
+Data_no_EDDC$PP_pooledmodel <- predict(Pooled_model,Data_no_EDDC, type = "response", na.rm=T)
+Data_no_both$PP_pooledmodel <- predict(Pooled_model,Data_no_both, type = "response", na.rm=T)
+
+# Creamos objetos que contiene las PP y sus errores estandar
+predobs <- predict(Pooled_model, newdata = Data_obs, type = "link", se.fit = TRUE)
+predno_obesity <- predict(Pooled_model, newdata = Data_no_obesity, type = "link", se.fit = TRUE)
+predno_EDDC <- predict(Pooled_model, newdata = Data_no_EDDC, type = "link", se.fit = TRUE)
+predno_both <- predict(Pooled_model, newdata = Data_no_both, type = "link", se.fit = TRUE)
+
+
+# --- Estimamos las probabilidades y sus intervalos de confianza
+
+# - Datos con la distribución original
+Data_obs$PP_mean <- plogis(predobs$fit)
+Data_obs$PP_lw <- plogis(predobs$fit - 1.96 * predobs$se.fit)
+Data_obs$PP_up <- plogis(predobs$fit + 1.96 * predobs$se.fit)
+
+# - Datos con la distribución todo peso normal
+Data_no_obesity$PP_mean <- plogis(predno_obesity$fit)
+Data_no_obesity$PP_lw <- plogis(predno_obesity$fit - 1.96 * predobs$se.fit)
+Data_no_obesity$PP_up <- plogis(predno_obesity$fit + 1.96 * predno_obesity$se.fit)
+
+
+# - Datos con la distribución de no condición adversa en la infancia
+Data_no_EDDC$PP_mean <- plogis(predno_EDDC$fit)
+Data_no_EDDC$PP_lw <- plogis(predno_EDDC$fit - 1.96 * predno_EDDC$se.fit)
+Data_no_EDDC$PP_up <- plogis(predno_EDDC$fit + 1.96 * predno_EDDC$se.fit)
+
+
+# - Datos con la distribución de peso normal y no condicion adversa en la ifnancia
+Data_no_both$PP_mean <- plogis(predno_both$fit)
+Data_no_both$PP_lw <- plogis(predno_both$fit - 1.96 * predno_both$se.fit)
+Data_no_both$PP_up <- plogis(predno_both$fit + 1.96 * predno_both$se.fit)
+
+
+# Estimamos las probabilidades de tener diabetes 
+
+PP_diabetes_obs <- Data_obs %>% 
+  group_by(cohorte_final) %>% 
+  summarize(PP_mean = mean(PP_mean, na.rm=T),
+            PP_lw = mean(PP_lw, na.rm=T),
+            PP_up = mean(PP_up, na.rm=T)) %>% 
+  mutate(escenario = 1)
+
+PP_diabetes_noECCD <- Data_no_EDDC %>% 
+  group_by(cohorte_final) %>% 
+  summarize(PP_mean = mean(PP_mean, na.rm=T),
+            PP_lw = mean(PP_lw, na.rm=T),
+            PP_up = mean(PP_up, na.rm=T))  %>% 
+  mutate(escenario = 2)
+
+PP_diabetes_noobesity<- Data_no_obesity %>% 
+  group_by(cohorte_final) %>% 
+  summarize(PP_mean = mean(PP_mean, na.rm=T),
+            PP_lw = mean(PP_lw, na.rm=T),
+            PP_up = mean(PP_up, na.rm=T))  %>% 
+  mutate(escenario = 3)
+
+PP_diabetes_noboth <- Data_no_both %>% 
+  group_by(cohorte_final) %>% 
+  summarize(PP_mean = mean(PP_mean, na.rm=T),
+            PP_lw = mean(PP_lw, na.rm=T),
+            PP_up = mean(PP_up, na.rm=T))  %>% 
+  mutate(escenario = 4)
+
+# Combinamos bases de datos
+Base_final <- rbind(PP_diabetes_obs,
+                    PP_diabetes_noobesity,
+                    PP_diabetes_noECCD,
+                    PP_diabetes_noboth)
+
+# Eriquetar variables
+Base_final$cohorte_final <- factor(Base_final$cohorte_final,
+                                   levels = c(0,1,2),
+                                   labels = c("1930-39", "1940-49", "1950-59"))
+
+Base_final$escenario <- factor(Base_final$escenario,
+                               levels = c(1,2,3,4),
+                               labels = c("Observado", 
+                                          "No EDDC", 
+                                          "No obesity",
+                                          "No EDDC & No Obesity"))
+
+
+Grafica <- ggplot(Base_final,mapping = aes(x=escenario,
+                                           y=PP_mean,
+                                           group=escenario,
+                                           fill=escenario)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  geom_errorbar(aes(ymin = PP_lw, ymax = PP_up),
+                width = 0.2, position = position_dodge(0.9)) +
+  facet_grid(.~cohorte_final) +
+  theme_dark()+
+  scale_color_manual(values = c(rep("black",4))) +
+  scale_fill_manual(values = c("#252525","#636363","#969696","#BDBDBD")) +
+  theme(text = element_text(size = 22), 
+        legend.position = "",
+        #legend.position=c(.10, 0.50),
+        legend.background = element_rect(fill="transparent", 
+                                         size=1, linetype="solid", color = "white"),
+        #strip.background = element_rect(color="black", fill="grey80", size=0.5, linetype="solid"),
+        strip.background = element_rect(fill = "grey40", color = "grey20", size = 1),
+        strip.text = element_text(colour = "white"),
+        axis.text.x = element_text(angle = 60, vjust = 1, hjust=1),
+        legend.key.size = unit(.6, "cm"),
+        legend.key.width = unit(.6,"cm"),
+        legend.title = element_text(color = "Black", size = 20),
+        legend.text = element_text(color = "Black", size = 20)) +
+  #guides(fill=guide_legend(ncol=2)) +
+  labs(#title = "",
+       y="Probabilidad de reportar diabetes",
+       x="")
+Grafica
+
+```
+
+Por lo tanto, las contribuciones de eliminar cada condición sobre la probabilidad de reportar diabetes se pueden estimar a partir de las diferencias entre la probabilidad observada y la probabilidad estimada a partir de hacer un cambio en la distribución.
+
+
+## Ejercicios para el estudiante
+
+1) Usando CDLT, cuál sería el impacto que tendría la eliminación de mortalidad por mortalidad externa en la esperanza de vida a lo largo del tiempo para cada entidad federativa
+
+2) Para el análisis de regresión:
+    2.1 Que pasaría si se hiciera un cambio en la distribución educativa, donde todas las personas tengan el nivel de escolaridad más alto 
+    2.2 Estima la contribución absoluta y relativa de eliminar EDDC y obesidad en las cohortes analizadas
+
+
+
+## Referencia
+
+Zazueta-Borboa, J.D., Rafael Samper-Ternent, Rebeca Wong, Neil Mehta, Economic Disadvantage During Childhood, Obesity, and Diabetes Across Three Birth Cohorts of Older Mexicans, The Journals of Gerontology: Series B, Volume 79, Issue 12, December 2024, gbae178, https://doi.org/10.1093/geronb/gbae178
+
+Zazueta-Borboa, J.D. Paola Vázquez-Castillo, Maria Gargiulo, José Manuel Aburto, The impact of violence and COVID-19 on Mexico’s life-expectancy losses and recent bounce-back, 2015–22, International Journal of Epidemiology, Volume 54, Issue 3, June 2025, dyaf034, https://doi.org/10.1093/ije/dyaf034
+
+
+
+
+
+
