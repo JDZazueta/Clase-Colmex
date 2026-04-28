@@ -110,7 +110,7 @@ CDLT <- function (nmx, age, Ri, Sex, nax = NULL, n){
   
   
   nLix <- n * lxipn + ndix * naix
-  nLix[m] <- ndix[m]/nmx[m]*Ri[m] # We compute the last nLx
+  nLix[m] <- ndix[m]/nmx[m]*(1-Ri[m]) # We compute the last nLx
   Tix = rev(cumsum(rev(nLix)))
   eix = Tix/lix
   
